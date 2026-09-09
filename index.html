@@ -214,6 +214,8 @@
   .up-preview-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:16px 0 10px;flex-wrap:wrap;}
   .up-preview-head span{font-size:12.5px;font-weight:700;color:var(--navy-2);}
   .up-warn{margin-top:10px;background:var(--warn-bg);border:1px solid rgba(214,158,46,0.35);color:#8A6A16;border-radius:10px;padding:10px 12px;font-size:11.5px;line-height:1.6;}
+  .edit-mode-banner{margin-bottom:16px;background:var(--warn-bg);border:1px solid rgba(214,158,46,0.35);color:#8A6100;border-radius:12px;padding:12px 14px;display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:12.5px;font-weight:600;flex-wrap:wrap;}
+  .edit-mode-banner .btn{flex:none;}
   .diag-box{margin-top:10px;padding-top:9px;border-top:1px dashed rgba(138,106,22,0.35);font-family:'JetBrains Mono',monospace;font-size:10.5px;line-height:1.65;max-height:180px;overflow-y:auto;}
   .src-status{margin-top:16px;padding-top:14px;border-top:1px solid var(--line);}
   .src-title{font-size:12px;font-weight:800;color:var(--ink);margin-bottom:10px;}
@@ -861,6 +863,11 @@
       <div class="banner">
         <div><div class="banner-title">현장 방문 기록</div><div class="banner-sub">방문하면서 바로 입력하면 정리는 끝</div></div>
         <div class="banner-emoji">📋</div>
+      </div>
+
+      <div class="edit-mode-banner" id="editModeBanner" style="display:none">
+        <span>✏ <b id="editModeText"></b> 방문 기록을 불러와 수정하는 중이에요. 저장하면 이 기록에 그대로 반영돼요.</span>
+        <button class="btn btn-ghost btn-sm" id="cancelVisitEditBtn">수정 취소</button>
       </div>
 
       <div class="card">
@@ -1566,6 +1573,22 @@ let draftChecks={};
 let draftCheckNotes={};
 let editingVisitId=null;   // '이어서 작성'으로 불러온 방문 id   // {idx:{note,photo}}
 function ckNote(idx){ return (draftCheckNotes[idx]=draftCheckNotes[idx]||{note:'',photo:''}); }
+function renderEditModeBanner(){
+  const box=$('editModeBanner'); if(!box) return;
+  if(editingVisitId){
+    const v=visits.find(x=>x.id===editingVisitId);
+    if(v){ box.style.display='flex'; $('editModeText').textContent=`${v.center} · ${v.date}`; return; }
+  }
+  box.style.display='none';
+}
+function exitVisitEdit(){
+  editingVisitId=null;
+  draftChecks={}; draftCheckNotes={}; draftIssues=[]; resetIssueForm();
+  $('vNote').value=''; $('vPriv').value=''; $('vDate').value=todayStr();
+  $('mTranscript').value=''; lastSummary=''; $('sumOut').style.display='none'; $('recTimer').textContent='';
+  renderAll();
+  toast('수정을 취소했어요.');
+}
 function renderVisitForm(){
   const sel=$('vCenter'); sel.innerHTML='';
   centers.forEach(c=>{const o=document.createElement('option');o.value=c;o.textContent=c;sel.appendChild(o);});
@@ -1573,6 +1596,7 @@ function renderVisitForm(){
   renderChecklist();
   renderKpiInputs();
   renderDraftIssues();
+  renderEditModeBanner();
 }
 function renderChecklist(){
   const box=$('checklistBox'); box.innerHTML='';
@@ -2023,8 +2047,6 @@ $('saveVisitBtn').addEventListener('click',async()=>{
   if(!center){toast('설정에서 센터를 먼저 추가해 주세요.');return;}
   const date=$('vDate').value||todayStr();
 
-  // 같은 센터·같은 날짜의 기존 방문이 있으면 새로 만들지 않고 업데이트
-  const existing=visits.find(v=>v.center===center && v.date===date);
   const payload={
     center, date,
     checks:{...draftChecks},
@@ -2037,21 +2059,34 @@ $('saveVisitBtn').addEventListener('click',async()=>{
     summary:lastSummary
   };
 
-  // "이어서 작성"으로 불러온 기록을 그대로 저장하는 경우 → 폼에 이미 전체가 있으므로 교체
-  if(existing && editingVisitId===existing.id){
-    Object.assign(existing, payload);
+  // "이어서 작성"으로 불러온 기록을 수정하는 경우 → id로 원본을 찾아 그대로 교체.
+  // (센터·날짜를 폼에서 바꿔도 원본 기록을 계속 따라간다 — 새 기록을 만들거나 다른 기록에 잘못 합쳐지지 않게)
+  if(editingVisitId){
+    const editing=visits.find(v=>v.id===editingVisitId);
+    if(editing){
+      const conflict=visits.find(v=>v.id!==editingVisitId && v.center===center && v.date===date);
+      if(conflict){
+        toast(`이미 ${center} · ${date}에 다른 기록이 있어요. 센터나 날짜를 다른 값으로 바꿔주세요.`);
+        return;
+      }
+      Object.assign(editing, payload);
+      editingVisitId=null;
+      agendas[center]=agList(center).filter(a=>!a.done);
+      agendaState[center]={};
+      await saveAll();
+      draftChecks={}; draftCheckNotes={}; draftIssues=[]; resetIssueForm(); $('vNote').value=''; $('vPriv').value=''; $('vDate').value=todayStr();
+      if(recording) stopRec();
+      recFinal=''; lastSummary=''; $('mTranscript').value=''; $('sumOut').style.display='none'; $('recTimer').textContent='';
+      renderAll();
+      toast(`✅ ${center} 기록을 수정했어요.`);
+      return;
+    }
+    // 원본 기록을 찾을 수 없으면(삭제된 경우) 일반 저장 흐름으로 진행
     editingVisitId=null;
-    agendas[center]=agList(center).filter(a=>!a.done);
-    agendaState[center]={};
-    await saveAll();
-    draftChecks={}; draftCheckNotes={}; draftIssues=[]; resetIssueForm(); $('vNote').value=''; $('vPriv').value=''; $('vDate').value=todayStr();
-    if(recording) stopRec();
-    recFinal=''; lastSummary=''; $('mTranscript').value=''; $('sumOut').style.display='none'; $('recTimer').textContent='';
-    renderAll();
-    toast(`✅ ${center} 기록을 수정했어요.`);
-    return;
   }
 
+  // 같은 센터·같은 날짜의 기존 방문이 있으면 새로 만들지 않고 업데이트
+  const existing=visits.find(v=>v.center===center && v.date===date);
   if(existing){
     if(!confirm(`${center} · ${date} 기록이 이미 있어요.\n기존 내용을 유지하면서 이번에 입력한 내용을 추가·병합할까요?\n\n· 이슈, 체크사항은 기존 것에 더해져요\n· 메모는 이어 붙고, 점검·개인 메모는 새로 입력한 것만 갱신돼요`)){
       return;
@@ -4693,10 +4728,15 @@ function editVisit(id){
   switchView('visit');
   $('vCenter').value=v.center;
   $('vDate').value=v.date;
-  renderChecklist(); renderDraftIssues(); renderKpiInputs();
+  renderChecklist(); renderDraftIssues(); renderKpiInputs(); renderEditModeBanner();
   toast(`${v.center} · ${v.date} 기록을 불러왔어요. 수정 후 저장하면 이 기록에 반영돼요.`);
   setTimeout(()=>{ const el=$('view-visit'); if(el&&el.scrollTo) el.scrollTo({top:0,behavior:'smooth'}); },60);
 }
+$('cancelVisitEditBtn').addEventListener('click',()=>{
+  if(!editingVisitId) return;
+  if(!confirm('수정을 취소할까요? 입력한 내용은 저장되지 않아요.')) return;
+  exitVisitEdit();
+});
 function openReport(id,keepScroll){
   const v=visits.find(x=>x.id===id); if(!v) return;
   logSel=id;
