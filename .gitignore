@@ -1,0 +1,3 @@
+discord-report-agent/.env
+discord-report-agent/__pycache__/
+discord-report-agent/*.pyc
